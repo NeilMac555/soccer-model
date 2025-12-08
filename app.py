@@ -2,23 +2,25 @@ import streamlit as st
 import numpy as np
 import math
 
-# -----------------------------
-#   GLOBAL UI SETTINGS
-# -----------------------------
+# --------------------------------------------------------
+# GLOBAL UI SETTINGS
+# --------------------------------------------------------
 st.set_page_config(
     page_title="Soccer Mastery",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
+# --------------------------------------------------------
+# THEME (bettin.gs-style clean dark UI)
+# --------------------------------------------------------
 st.markdown("""
 <style>
     .main {background-color:#0d0f13;}
     .stApp {background-color:#0d0f13;}
-    div.block-container {padding-top:1rem;}
-    h1, h2, h3, h4, h5, h6, p, div {
+    h1, h2, h3, h4, h5, h6, p, div, span {
         color:#ffffff !important;
-        font-family: 'Segoe UI', sans-serif;
+        font-family:'Segoe UI', sans-serif;
     }
     .rounded-box {
         background: #1a1d23;
@@ -29,209 +31,191 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h1 style='color:#dd44ff;'>⚽ Soccer Mastery</h1>", unsafe_allow_html=True)
-
-
-# ============================================================
-#           HOME FIELD ADVANTAGE VALUES
-# ============================================================
-
+# --------------------------------------------------------
+# HOME FIELD ADVANTAGE (league presets)
+# --------------------------------------------------------
 HFA = {
     "Premier League": 0.25,
+    "Serie A": 0.38,
     "La Liga": 0.30,
-    "Serie A": 0.35,
     "Bundesliga": 0.22,
     "Ligue 1": 0.33,
-    "Champions League": 0.30,
-    "Europa League": 0.30,
+    "Champions League / Europa": 0.35,
     "Neutral Venue": 0.00
 }
 
+# --------------------------------------------------------
+# TEAM STRENGTH BLENDER
+# (xG, squad value, manager, PitchRank)
+# --------------------------------------------------------
+def compute_strength(xg_for, xg_against, squad, manager, pitchrank):
+    """
+    Returns a single strength number.
+    Weighted blend of:
+    - xGF / xGA ratio
+    - Squad value
+    - Manager rating
+    - PitchRank injection
+    """
 
-# ============================================================
-#           BAYESIAN STRENGTH CALCULATION
-# ============================================================
+    if xg_against == 0:
+        xga = 0.0001
+    else:
+        xga = xg_against
 
-def compute_strength(xGF, xGA, pitchrank, squad, manager):
+    xg_component = (xg_for / xga)
 
-    if xGA == 0:
-        xGA = 0.01
+    squad_component = squad / 100  
+    manager_component = manager / 10  
 
-    xg_component = xGF / xGA
-    prior_component = pitchrank / 3.39
-    subjective_component = 0.6*(squad/100) + 0.4*(manager/10)
+    # PitchRank: expected range 0.35–3.39  
+    pitch_component = pitchrank / 3.39  
 
     strength = (
-        0.50 * xg_component +
-        0.30 * prior_component +
-        0.20 * subjective_component
+        0.40 * xg_component +
+        0.25 * squad_component +
+        0.15 * manager_component +
+        0.20 * pitch_component
     )
 
     return strength
 
+# --------------------------------------------------------
+# POISSON MATCH MODEL (correct implementation)
+# --------------------------------------------------------
+def poisson_prob(lmbda, k):
+    """Probability of scoring exactly k goals."""
+    return np.exp(-lmbda) * (lmbda ** k) / math.factorial(k)
 
-# ============================================================
-#           SUPREMACY → EXPECTED GOALS MODEL
-# ============================================================
+def match_probs(home_xg, away_xg):
+    """Returns probabilities for Home, Draw, Away."""
+    max_goals = 10
+    P = np.zeros((max_goals, max_goals))
 
-def expected_goals_from_supremacy(s):
-    base_goals = 1.45
-    home_xg = base_goals + (s * 0.60)
-    away_xg = base_goals - (s * 0.60)
-    return max(home_xg, 0.1), max(away_xg, 0.1)
+    for i in range(max_goals):
+        for j in range(max_goals):
+            P[i][j] = poisson_prob(home_xg, i) * poisson_prob(away_xg, j)
 
-
-# ============================================================
-#           FIXED POISSON ENGINE (NO ERRORS)
-# ============================================================
-
-def match_probabilities(home_xg, away_xg, max_goals=10):
-    home_probs = [math.exp(-home_xg) * home_xg**i / math.factorial(i)
-                  for i in range(max_goals+1)]
-    away_probs = [math.exp(-away_xg) * away_xg**j / math.factorial(j)
-                  for j in range(max_goals+1)]
-
-    p_home = 0
-    p_away = 0
-    p_draw = 0
-
-    for i in range(len(home_probs)):
-        for j in range(len(away_probs)):
-            p = home_probs[i] * away_probs[j]
-            if i > j:
-                p_home += p
-            elif j > i:
-                p_away += p
-            else:
-                p_draw += p
+    p_home = np.sum(P[np.triu_indices(max_goals, 1)])
+    p_away = np.sum(P[np.tril_indices(max_goals, -1)])
+    p_draw = np.sum(np.diag(P))
 
     return p_home, p_draw, p_away
 
-
-
-# ============================================================
-#       SIDEBAR NAVIGATION
-# ============================================================
-
-menu = st.sidebar.radio(
+# --------------------------------------------------------
+# SIDEBAR NAVIGATION
+# --------------------------------------------------------
+page = st.sidebar.radio(
     "Navigation",
     ["Inputs", "Strength Ratings", "Projection", "Value Detection"]
 )
 
 
-# ============================================================
-#                     PAGE 1 — INPUTS
-# ============================================================
-
-if menu == "Inputs":
-    st.markdown("<h2 style='color:#dd44ff;'>Match Inputs</h2>", unsafe_allow_html=True)
+# --------------------------------------------------------
+# PAGE: INPUTS
+# --------------------------------------------------------
+if page == "Inputs":
+    st.title("Match Inputs")
+    st.markdown("### Enter team data to generate predictions")
 
     league = st.selectbox("Select Competition", list(HFA.keys()))
 
-    st.markdown("### Team A — HOME")
-    A_xgF = st.number_input("xG For /90", 0.0, 5.0, 0.00, 0.01)
-    A_xgA = st.number_input("xG Against /90", 0.0, 5.0, 0.00, 0.01)
-    A_pitch = st.number_input("PitchRank (0.35–3.39)", 0.35, 3.39, 1.00, 0.01)
-    A_squad = st.slider("Squad Value (0–100)", 0, 100, 50)
-    A_man = st.slider("Manager Rating (1–10)", 1, 10, 5)
+    colA, colB = st.columns(2)
 
-    st.markdown("### Team B — AWAY")
-    B_xgF = st.number_input("xG For /90 ", 0.0, 5.0, 0.00, 0.01)
-    B_xgA = st.number_input("xG Against /90 ", 0.0, 5.0, 0.00, 0.01)
-    B_pitch = st.number_input("PitchRank (0.35–3.39) ", 0.35, 3.39, 1.00, 0.01)
-    B_squad = st.slider("Squad Value (0–100)", 0, 100, 50)
-    B_man = st.slider("Manager Rating (1–10)", 1, 10, 5)
+    with colA:
+        st.subheader("Team A — HOME")
+        A_xgF = st.number_input("xG For /90", 0.0, 5.0, 0.0)
+        A_xgA = st.number_input("xG Against /90", 0.0, 5.0, 0.0)
+        A_squad = st.slider("Squad Value (0–100)", 0, 100, 50)
+        A_manager = st.slider("Manager Rating (1–10)", 1, 10, 5)
+        A_pitch = st.number_input("PitchRank (0.35–3.39)", 0.35, 3.39, 1.0)
 
-    st.session_state["inputs"] = {
-        "league": league,
-        "A": (A_xgF, A_xgA, A_pitch, A_squad, A_man),
-        "B": (B_xgF, B_xgA, B_pitch, B_squad, B_man)
-    }
+    with colB:
+        st.subheader("Team B — AWAY")
+        B_xgF = st.number_input("xG For /90", 0.0, 5.0, 0.0, key="bxgf")
+        B_xgA = st.number_input("xG Against /90", 0.0, 5.0, 0.0, key="bxga")
+        B_squad = st.slider("Squad Value (0–100)", 0, 100, 50, key="bsq")
+        B_manager = st.slider("Manager Rating (1–10)", 1, 10, 5, key="bman")
+        B_pitch = st.number_input("PitchRank (0.35–3.39)", 0.35, 3.39, 1.0, key="bpitch")
 
-
-# ============================================================
-#              PAGE 2 — STRENGTH RATINGS
-# ============================================================
-
-elif menu == "Strength Ratings":
-    st.markdown("<h2 style='color:#dd44ff;'>Bayesian Team Strengths</h2>", unsafe_allow_html=True)
-
-    if "inputs" not in st.session_state:
-        st.warning("Go to *Inputs* first.")
-    else:
-        A = compute_strength(*st.session_state["inputs"]["A"])
-        B = compute_strength(*st.session_state["inputs"]["B"])
-
-        st.markdown(f"""
-        <div class='rounded-box'>
-            <h3>Team A Strength: <span style='color:#66ffcc;'>{A:.3f}</span></h3>
-            <h3>Team B Strength: <span style='color:#66ffcc;'>{B:.3f}</span></h3>
-        </div>
-        """, unsafe_allow_html=True)
+    st.success("Inputs updated. Select another tab to continue.")
 
 
-# ============================================================
-#              PAGE 3 — MATCH PROJECTION
-# ============================================================
+# --------------------------------------------------------
+# PAGE: STRENGTH RATINGS
+# --------------------------------------------------------
+if page == "Strength Ratings":
+    st.title("Bayesian Blended Team Strengths")
 
-elif menu == "Projection":
-    st.markdown("<h2 style='color:#dd44ff;'>Match Projection</h2>", unsafe_allow_html=True)
+    A_strength = compute_strength(A_xgF, A_xgA, A_squad, A_manager, A_pitch)
+    B_strength = compute_strength(B_xgF, B_xgA, B_squad, B_manager, B_pitch)
 
-    if "inputs" not in st.session_state:
-        st.warning("Go to *Inputs* first.")
-    else:
-        league = st.session_state["inputs"]["league"]
-
-        A_strength = compute_strength(*st.session_state["inputs"]["A"])
-        B_strength = compute_strength(*st.session_state["inputs"]["B"])
-
-        supremacy = A_strength - B_strength + HFA[league]
-        home_xg, away_xg = expected_goals_from_supremacy(supremacy)
-
-        pH, pD, pA = match_probabilities(home_xg, away_xg)
-
-        st.markdown(f"""
-        <div class='rounded-box'>
-            <h3>Supremacy: {supremacy:.3f}</h3>
-            <h3>Expected Goals → Home {home_xg:.2f} | Away {away_xg:.2f}</h3>
-
-            <h3>Win Probabilities</h3>
-            Home: {pH*100:.1f}%<br>
-            Draw: {pD*100:.1f}%<br>
-            Away: {pA*100:.1f}%
-        </div>
-        """, unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    col1.metric("Team A Strength", f"{A_strength:.3f}")
+    col2.metric("Team B Strength", f"{B_strength:.3f}")
 
 
-# ============================================================
-#              PAGE 4 — VALUE DETECTION
-# ============================================================
+# --------------------------------------------------------
+# PAGE: MATCH PROJECTION
+# --------------------------------------------------------
+if page == "Projection":
+    st.title("Match Projection")
 
-elif menu == "Value Detection":
-    st.markdown("<h2 style='color:#dd44ff;'>Value Detection vs Pinnacle</h2>", unsafe_allow_html=True)
+    A_strength = compute_strength(A_xgF, A_xgA, A_squad, A_manager, A_pitch)
+    B_strength = compute_strength(B_xgF, B_xgA, B_squad, B_manager, B_pitch)
 
-    if "inputs" not in st.session_state:
-        st.warning("Go to Inputs first.")
-    else:
-        home_o = st.number_input("Home Odds", 1.01, 20.0, 2.00)
-        draw_o = st.number_input("Draw Odds", 1.01, 20.0, 3.50)
-        away_o = st.number_input("Away Odds", 1.01, 20.0, 3.75)
+    suprem = A_strength - B_strength + HFA[league]
 
-        A_strength = compute_strength(*st.session_state["inputs"]["A"])
-        B_strength = compute_strength(*st.session_state["inputs"]["B"])
-        league = st.session_state["inputs"]["league"]
+    home_xg = max(0.01, 1.35 + suprem * 0.60)
+    away_xg = max(0.01, 1.35 - suprem * 0.60)
 
-        supremacy = A_strength - B_strength + HFA[league]
-        h_xg, a_xg = expected_goals_from_supremacy(supremacy)
-        pH, pD, pA = match_probabilities(h_xg, a_xg)
+    pH, pD, pA = match_probs(home_xg, away_xg)
 
-        fair_H = 1/pH
-        fair_D = 1/pD
-        fair_A = 1/pA
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Home Win %", f"{pH*100:.1f}%")
+    col2.metric("Draw %", f"{pD*100:.1f}%")
+    col3.metric("Away Win %", f"{pA*100:.1f}%")
 
-        st.markdown(f"""
-        <div class='rounded-box'>
-            <h3>Fair Odds:</h3>
-            Home {fair_H:.2f} | Draw {fair_D:.2f} | Away {fair_A:.2f}
-        </div>
-        """, unsafe_allow_html=True)
+    st.markdown("### Expected Goals")
+    col4, col5 = st.columns(2)
+    col4.metric("Home xG", f"{home_xg:.2f}")
+    col5.metric("Away xG", f"{away_xg:.2f}")
+
+
+# --------------------------------------------------------
+# PAGE: VALUE DETECTION
+# --------------------------------------------------------
+if page == "Value Detection":
+    st.title("Value Detection vs Pinnacle")
+
+    col1, col2, col3 = st.columns(3)
+    home_odds = col1.number_input("Home Odds", 1.01, 20.0, 2.00)
+    draw_odds = col2.number_input("Draw Odds", 1.01, 20.0, 3.50)
+    away_odds = col3.number_input("Away Odds", 1.01, 20.0, 3.75)
+
+    A_strength = compute_strength(A_xgF, A_xgA, A_squad, A_manager, A_pitch)
+    B_strength = compute_strength(B_xgF, B_xgA, B_squad, B_manager, B_pitch)
+
+    suprem = A_strength - B_strength + HFA[league]
+
+    home_xg = max(0.01, 1.35 + suprem * 0.60)
+    away_xg = max(0.01, 1.35 - suprem * 0.60)
+
+    pH, pD, pA = match_probs(home_xg, away_xg)
+
+    fairH = 1 / pH
+    fairD = 1 / pD
+    fairA = 1 / pA
+
+    col4, col5, col6 = st.columns(3)
+    col4.metric("Fair Home Odds", f"{fairH:.2f}")
+    col5.metric("Fair Draw Odds", f"{fairD:.2f}")
+    col6.metric("Fair Away Odds", f"{fairA:.2f}")
+
+    st.subheader("Value Signals")
+    if home_odds > fairH:
+        st.success("Home team is undervalued!")
+    if draw_odds > fairD:
+        st.success("Draw is undervalued!")
+    if away_odds > fairA:
+        st.success("Away team is undervalued!")
