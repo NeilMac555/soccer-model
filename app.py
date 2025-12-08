@@ -4,287 +4,273 @@ import pandas as pd
 from math import exp, factorial
 
 # ===========================================================
-# PAGE CONFIG
+# PAGE CONFIG — Clean minimal SaaS aesthetic
 # ===========================================================
 st.set_page_config(
-    page_title="Soccer Model 3.0 — Bayesian Engine",
-    layout="wide"
+    page_title="Soccer Mastery",
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 # ===========================================================
-# CYBERPUNK NEON PURPLE/ORANGE THEME
+# GLOBAL CSS — Rounded cards, clean UI
 # ===========================================================
 st.markdown("""
 <style>
 
 body {
-    background-color: #0a0014;
-    color: #e0d7ff;
+    background-color: #0d1117;
+    color: #e6e6e6;
+    font-family: 'Inter', sans-serif;
 }
 
-section.main {
-    background-color: #0a0014 !important;
+h1,h2,h3,h4 {
+    font-weight: 600 !important;
+    color: #fafafa;
 }
 
-h1, h2, h3, h4, h5 {
-    color: #ff9fff !important;
-    font-weight: 700 !important;
-    text-shadow: 0 0 12px #ff38ff;
+.sidebar .sidebar-content {
+    background-color: #0d1117 !important;
 }
 
-.stTabs [data-baseweb="tab-list"] {
-    gap: 2rem;
+.block-container {
+    padding-top: 1rem;
 }
 
-.stTabs [data-baseweb="tab"] {
-    font-size: 1.2rem;
-    padding: 0.75rem 1.25rem;
-    color: #ffaaff;
-    border-radius: 8px;
-    background: rgba(255, 120, 255, 0.08);
-    transition: 0.3s;
+.card {
+    background: #161b22;
+    padding: 18px 22px;
+    border-radius: 14px;
+    border: 1px solid #1f242d;
+    margin-bottom: 18px;
 }
 
-.stTabs [aria-selected="true"] {
-    color: #ff9fff !important;
-    background: rgba(255, 120, 255, 0.20);
-    border-bottom: 3px solid #ff38ff !important;
-    text-shadow: 0 0 10px #ff38ff;
+.metric-card {
+    background: #161b22;
+    padding: 20px;
+    border-radius: 14px;
+    text-align: center;
+    border: 1px solid #1f242d;
 }
 
-[data-testid="stMetricValue"] {
-    color: #ff8c42 !important;
-    text-shadow: 0px 0px 12px #ff8c42;
-    font-weight: 900 !important;
-    font-size: 2.1rem !important;
+.metric-card h3 {
+    font-size: 1rem;
+    font-weight: 500;
+    color: #c9d1d9;
+}
+
+.metric-card p {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #58a6ff;
+}
+
+table {
+    border-radius: 10px;
 }
 
 </style>
 """, unsafe_allow_html=True)
 
 # ===========================================================
-# LEAGUE PARAMETERS (calibrated)
+# LEAGUE-SPECIFIC HOME FIELD ADVANTAGE
 # ===========================================================
-
-LEAGUES = {
-    "Premier League":      {"base_rate": 1.55, "hfa": 1.09, "rho": -0.07},
-    "Serie A":             {"base_rate": 1.45, "hfa": 1.12, "rho": -0.04},
-    "La Liga":             {"base_rate": 1.27, "hfa": 1.10, "rho": -0.03},
-    "Bundesliga":          {"base_rate": 1.70, "hfa": 1.08, "rho": -0.10},
-    "Ligue 1":             {"base_rate": 1.45, "hfa": 1.11, "rho": -0.06},
-    "European Competitions": {"base_rate": 1.58, "hfa": 1.13, "rho": -0.05},
-    "Neutral Venue":       {"base_rate": 1.50, "hfa": 1.00, "rho": -0.05}
+HFA = {
+    "Premier League": 0.25,
+    "La Liga": 0.30,
+    "Serie A": 0.35,
+    "Bundesliga": 0.22,
+    "Ligue 1": 0.32,
+    "Champions League": 0.30,
+    "Europa League": 0.30,
+    "Neutral Venue": 0.00
 }
 
 # ===========================================================
-# BAYESIAN TEAM STRENGTH MODEL
-# ===========================================================
-
-def bayesian_strength(xG_for, xG_against, squad_value, manager_rating, league_avg):
-    """
-    SPI-STYLE PRIOR:
-    prior = 0.6 * squad_value_norm + 0.4 * manager_norm
-    """
-
-    squad_norm = squad_value / 100
-    manager_norm = manager_rating / 10
-
-    prior = 0.6 * squad_norm + 0.4 * manager_norm
-
-    # xG strength relative to league
-    att_xg = xG_for / league_avg
-    def_xg = league_avg / xG_against if xG_against > 0 else 1.0
-
-    # Combine with priors:
-    # Fast decay simulated by giving xG less weight (0.55) and priors strong weight (0.45)
-    attack_strength = (0.55 * att_xg) + (0.45 * prior)
-    defense_strength = (0.55 * def_xg) + (0.45 * prior)
-
-    # Moderate shrinkage
-    attack_strength = 1 + 0.6*(attack_strength - 1)
-    defense_strength = 1 + 0.6*(defense_strength - 1)
-
-    return attack_strength, defense_strength
-
-
-# ===========================================================
-# POISSON + DIXON-COLES
+# FUNCTIONS
 # ===========================================================
 
 def poisson_prob(lmbda, k):
     return (lmbda**k * exp(-lmbda)) / factorial(k)
 
-def dixon_coles(lambda_home, lambda_away, rho, max_goals=7):
+def compute_correct_score_matrix(lA, lB, max_goals=7):
     matrix = np.zeros((max_goals+1, max_goals+1))
-
     for i in range(max_goals+1):
         for j in range(max_goals+1):
-            corr = 1.0
-
-            if i == 0 and j == 0:
-                corr = 1 - rho
-            elif i == 0 and j == 1:
-                corr = 1 + rho
-            elif i == 1 and j == 0:
-                corr = 1 + rho
-            elif i == 1 and j == 1:
-                corr = 1 - rho
-
-            matrix[i, j] = poisson_prob(lambda_home, i) * poisson_prob(lambda_away, j) * corr
-
+            matrix[i,j] = poisson_prob(lA, i) * poisson_prob(lB, j)
     return matrix
 
+def expected_goals_from_supremacy(sup):
+    base = 1.35
+    k = 0.60
+    home_xg = base + k*sup
+    away_xg = base - k*sup
+    return max(home_xg,0.05), max(away_xg,0.05)
+
+def pitchrank_strength(pr):
+    return exp(0.55 * (pr - 1))
 
 # ===========================================================
-# UI LAYOUT
+# TITLE
 # ===========================================================
-
-st.title("⚽ Soccer Model 3.0 — SPI Bayesian Engine (Cyberpunk Edition)")
-
-tabs = st.tabs(["📝 Inputs", "📊 Strengths", "🔮 Projection", "🧮 Correct Scores", "💸 Value Detection"])
-
+st.title("⚽ Soccer Mastery")
 
 # ===========================================================
-# TAB 1 — INPUTS
+# SIDEBAR
 # ===========================================================
-with tabs[0]:
+with st.sidebar:
+    st.header("Navigation")
+    page = st.radio("", ["Inputs", "Strength Ratings", "Projection", "Correct Scores", "Value Detection"])
+
+# ===========================================================
+# INPUT PAGE
+# ===========================================================
+if page == "Inputs":
     st.header("Match Inputs")
 
-    league = st.selectbox("Select Competition", list(LEAGUES.keys()))
+    league = st.selectbox("Competition", list(HFA.keys()))
 
     colA, colB = st.columns(2)
-
     with colA:
-        st.subheader("Team A — HOME")
-
-        A_xgf = st.number_input("xG For /90", value=0.00, step=0.01)
-        A_xga = st.number_input("xG Against /90", value=0.00, step=0.01)
-        A_value = st.slider("Squad Value (0–100)", 0, 100, 0)
+        st.subheader("Home Team")
+        A_xgF = st.number_input("xG For per 90", 0.0, 5.0, 0.0, 0.01)
+        A_xgA = st.number_input("xG Against per 90", 0.0, 5.0, 0.0, 0.01)
+        A_pitch = st.number_input("PitchRank (0.35–3.39)", 0.35, 3.39, 1.00, 0.01)
+        A_squad = st.slider("Squad Strength (0–100)", 0, 100, 50)
         A_manager = st.slider("Manager Rating (1–10)", 1, 10, 5)
 
     with colB:
-        st.subheader("Team B — AWAY")
-
-        B_xgf = st.number_input("xG For /90 ", value=0.00, step=0.01)
-        B_xga = st.number_input("xG Against /90 ", value=0.00, step=0.01)
-        B_value = st.slider("Squad Value (0–100) ", 0, 100, 0)
+        st.subheader("Away Team")
+        B_xgF = st.number_input("xG For per 90 ", 0.0, 5.0, 0.0, 0.01)
+        B_xgA = st.number_input("xG Against per 90 ", 0.0, 5.0, 0.0, 0.01)
+        B_pitch = st.number_input("PitchRank (0.35–3.39) ", 0.35, 3.39, 1.00, 0.01)
+        B_squad = st.slider("Squad Strength (0–100) ", 0, 100, 50)
         B_manager = st.slider("Manager Rating (1–10) ", 1, 10, 5)
 
-
-# ===========================================================
-# TAB 2 — STRENGTHS
-# ===========================================================
-with tabs[1]:
-    st.header("Bayesian Team Strengths")
-
-    lg = LEAGUES[league]
-    league_avg = lg["base_rate"]
-
-    attA, defA = bayesian_strength(A_xgf, A_xga, A_value, A_manager, league_avg)
-    attB, defB = bayesian_strength(B_xgf, B_xga, B_value, B_manager, league_avg)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Team A (Home)")
-        st.metric("Attack Strength", f"{attA:.3f}")
-        st.metric("Defense Strength", f"{defA:.3f}")
-
-    with col2:
-        st.subheader("Team B (Away)")
-        st.metric("Attack Strength", f"{attB:.3f}")
-        st.metric("Defense Strength", f"{defB:.3f}")
+    st.info("Go to Strength Ratings to see blended Bayesian team strengths.")
 
 
 # ===========================================================
-# TAB 3 — PROJECTION
+# STRENGTH RATINGS
 # ===========================================================
-with tabs[2]:
-    st.header("Match Projection (Poisson + Dixon–Coles)")
+if page == "Strength Ratings":
+    st.header("Bayesian Blended Team Strengths")
 
-    # Expected goals
-    lambda_home = league_avg * attA * defB * lg["hfa"]
-    lambda_away = league_avg * attB * defA
+    # Normalize components
+    def compute_strength(xgF, xgA, pitch, squad, manager):
+        xg_att = xgF
+        xg_def = max(0.1, 1/xgA if xgA > 0 else 1.0)
 
-    matrix = dixon_coles(lambda_home, lambda_away, lg["rho"])
+        pr = pitchrank_strength(pitch)
 
-    homeP = np.sum(np.triu(matrix, k=1))
-    awayP = np.sum(np.tril(matrix, k=-1))
-    drawP = np.sum(np.diag(matrix))
+        squad_norm = squad / 100
+        manager_norm = manager / 10
 
-    colp1, colp2, colp3 = st.columns(3)
-    colp1.metric("Home Win %", f"{homeP*100:.1f}%")
-    colp2.metric("Draw %", f"{drawP*100:.1f}%")
-    colp3.metric("Away Win %", f"{awayP*100:.1f}%")
+        prior = 0.7*(0.6*xg_att + 0.4*xg_def) + 0.3*(0.5*pr + 0.3*squad_norm + 0.2*manager_norm)
 
-    st.subheader("Fair Odds")
-    colf1, colf2, colf3 = st.columns(3)
-    colf1.metric("Home", f"{1/homeP:.2f}")
-    colf2.metric("Draw", f"{1/drawP:.2f}")
-    colf3.metric("Away", f"{1/awayP:.2f}")
+        return prior
+
+    A_strength = compute_strength(A_xgF, A_xgA, A_pitch, A_squad, A_manager)
+    B_strength = compute_strength(B_xgF, B_xgA, B_pitch, B_squad, B_manager)
+
+    colA, colB = st.columns(2)
+    with colA:
+        st.markdown("<div class='metric-card'><h3>Home Strength</h3><p>{:.3f}</p></div>".format(A_strength), unsafe_allow_html=True)
+    with colB:
+        st.markdown("<div class='metric-card'><h3>Away Strength</h3><p>{:.3f}</p></div>".format(B_strength), unsafe_allow_html=True)
+
+
+# ===========================================================
+# PROJECTION
+# ===========================================================
+if page == "Projection":
+    st.header("Match Projection")
+
+    supremacy = A_strength - B_strength + HFA[league]
+
+    lA, lB = expected_goals_from_supremacy(supremacy)
 
     st.subheader("Expected Goals")
-    colEG1, colEG2 = st.columns(2)
-    colEG1.metric("λ Home", f"{lambda_home:.2f}")
-    colEG2.metric("λ Away", f"{lambda_away:.2f}")
+    col1, col2 = st.columns(2)
+    col1.metric("Home xG", f"{lA:.2f}")
+    col2.metric("Away xG", f"{lB:.2f}")
+
+    matrix = compute_correct_score_matrix(lA, lB)
+
+    homeP = np.sum(np.triu(matrix,1))
+    drawP = np.sum(np.diag(matrix))
+    awayP = np.sum(np.tril(matrix,-1))
+
+    st.subheader("Outcome Probabilities")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Home Win %", f"{homeP*100:.1f}%")
+    col2.metric("Draw %", f"{drawP*100:.1f}%")
+    col3.metric("Away Win %", f"{awayP*100:.1f}%")
+
+    st.subheader("Fair Odds")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Home", f"{1/homeP:.2f}")
+    col2.metric("Draw", f"{1/drawP:.2f}")
+    col3.metric("Away", f"{1/awayP:.2f}")
+
+    st.info(f"Most Likely Scoreline: {np.unravel_index(np.argmax(matrix), matrix.shape)[0]} - {np.unravel_index(np.argmax(matrix), matrix.shape)[1]}")
 
 
 # ===========================================================
-# TAB 4 — CORRECT SCORES
+# CORRECT SCORES
 # ===========================================================
-with tabs[3]:
-    st.header("Correct Score Probabilities")
+if page == "Correct Scores":
+    st.header("Correct Score Probability Grid")
 
-    df = pd.DataFrame(matrix,
-        index=[f"{i} goals" for i in range(matrix.shape[0])],
-        columns=[f"{j} goals" for j in range(matrix.shape[1])]
+    matrix = compute_correct_score_matrix(
+        expected_goals_from_supremacy(A_strength - B_strength + HFA[league])[0],
+        expected_goals_from_supremacy(A_strength - B_strength + HFA[league])[1]
     )
 
-    st.dataframe(df.style.highlight_max(axis=None, color="#ff8c42"))
+    df = pd.DataFrame(matrix, index=[f"{i} goals" for i in range(8)],
+                               columns=[f"{j} goals" for j in range(8)])
+    st.dataframe(df.style.background_gradient(cmap="Blues"))
 
 
 # ===========================================================
-# TAB 5 — VALUE DETECTION
+# VALUE DETECTION
 # ===========================================================
-with tabs[4]:
-    st.header("Value Detection vs Market")
+if page == "Value Detection":
+    st.header("Value Detection vs Pinnacle")
 
-    colO1, colO2, colO3 = st.columns(3)
-    oddH = colO1.number_input("Home Odds", value=0.00, step=0.01)
-    oddD = colO2.number_input("Draw Odds", value=0.00, step=0.01)
-    oddA = colO3.number_input("Away Odds", value=0.00, step=0.01)
+    st.subheader("Market Odds (Pinnacle default)")
+    col1, col2, col3 = st.columns(3)
+    oddH = col1.number_input("Home Odds", 1.01, 25.0, 2.00)
+    oddD = col2.number_input("Draw Odds", 1.01, 25.0, 3.50)
+    oddA = col3.number_input("Away Odds", 1.01, 25.0, 3.75)
 
-    if oddH > 0 and oddD > 0 and oddA > 0:
+    supremacy = A_strength - B_strength + HFA[league]
+    lA, lB = expected_goals_from_supremacy(supremacy)
+    matrix = compute_correct_score_matrix(lA, lB)
 
-        rawH = 1/oddH
-        rawD = 1/oddD
-        rawA = 1/oddA
+    homeP = np.sum(np.triu(matrix,1))
+    drawP = np.sum(np.diag(matrix))
+    awayP = np.sum(np.tril(matrix,-1))
 
-        margin = rawH + rawD + rawA
+    market_probs = np.array([1/oddH, 1/oddD, 1/oddA])
+    market_probs /= market_probs.sum()
 
-        MH = rawH / margin
-        MD = rawD / margin
-        MA = rawA / margin
+    model_probs = np.array([homeP, drawP, awayP])
 
-        st.subheader("Market-Implied Probabilities")
-        colM1, colM2, colM3 = st.columns(3)
-        colM1.metric("Home", f"{MH*100:.1f}%")
-        colM2.metric("Draw", f"{MD*100:.1f}%")
-        colM3.metric("Away", f"{MA*100:.1f}%")
+    edges = model_probs - market_probs
 
-        # Edges
-        valH = homeP - MH
-        valD = drawP - MD
-        valA = awayP - MA
+    st.subheader("Value Signals")
+    col1, col2, col3 = st.columns(3)
 
-        st.subheader("Value Signals")
+    col1.metric("Home Edge", f"{edges[0]*100:.2f}%")
+    col2.metric("Draw Edge", f"{edges[1]*100:.2f}%")
+    col3.metric("Away Edge", f"{edges[2]*100:.2f}%")
 
-        if valH > 0:
-            st.success(f"VALUE ON HOME — Edge {valH:.4f}")
-        if valD > 0:
-            st.success(f"VALUE ON DRAW — Edge {valD:.4f}")
-        if valA > 0:
-            st.success(f"VALUE ON AWAY — Edge {valA:.4f}")
+    best = np.argmax(edges)
+    bets = ["Home", "Draw", "Away"]
 
-        if valH <= 0 and valD <= 0 and valA <= 0:
-            st.warning("⚠️ No value detected — Market is sharp.")
+    if edges[best] > 0:
+        st.success(f"Recommended Bet: **{bets[best]}** (Edge {edges[best]*100:.2f}%)")
+    else:
+        st.warning("No positive value detected. Market is sharp.")
 
